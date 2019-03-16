@@ -61,6 +61,15 @@ int reduce(DimensionColumnVector inputKeys, uint8_t *inputValues,
 void sort(DimensionColumnVector keys, uint8_t *values, int valueBytes,
           int length, void *cudaStream);
 
+// expand function is used to uncompress the compressed dimension keys and append to outputKeys.
+int expand(DimensionColumnVector inputKeys,
+           DimensionColumnVector outputKeys,
+           uint32_t *baseCounts,
+           uint32_t *indexVector,
+           int indexVectorLen,
+           int outputOccupiedLen,
+           void *cudaStream);
+
 // hyperloglog.
 int hyperloglog(DimensionColumnVector prevDimOut,
                 DimensionColumnVector curDimOut, uint32_t *prevValuesOut,

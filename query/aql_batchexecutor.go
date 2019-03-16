@@ -1,12 +1,12 @@
 package query
 
 import (
-	"fmt"
 	"github.com/uber/aresdb/memutils"
-	queryCom "github.com/uber/aresdb/query/common"
 	"github.com/uber/aresdb/utils"
+	queryCom "github.com/uber/aresdb/query/common"
 	"time"
 	"unsafe"
+	"fmt"
 )
 
 // BatchExecutor is batch executor interface for both Non-aggregation query and Aggregation query
@@ -59,7 +59,7 @@ type BatchExecutorImpl struct {
 }
 
 
-
+// NewBatchExecutor is to create a BatchExecutor.
 func NewBatchExecutor(qc *AQLQueryContext, batchID int32, customFilterFunc customFilterExecutor, stream unsafe.Pointer) BatchExecutor {
 	if qc.isNonAggregationQuery {
 		return &NonAggrBatchExecutorImpl{
@@ -80,6 +80,7 @@ func NewBatchExecutor(qc *AQLQueryContext, batchID int32, customFilterFunc custo
 	}
 }
 
+// filter
 func (e *BatchExecutorImpl) filter() {
 	// process main table common filter
 	e.qc.doProfile(func() {
@@ -92,6 +93,7 @@ func (e *BatchExecutorImpl) filter() {
 	}, "filters", e.stream)
 }
 
+// join
 func (e *BatchExecutorImpl) join() {
 	e.qc.doProfile(func() {
 		// join foreign tables
@@ -144,12 +146,18 @@ func (e *BatchExecutorImpl) join() {
 	}, "geo_intersect", e.stream)
 }
 
-func (e *BatchExecutorImpl) project() {
-	// Prepare for dimension and measure evaluation.
-	e.qc.OOPK.currentBatch.prepareForDimAndMeasureEval(e.qc.OOPK.DimRowBytes, e.qc.OOPK.MeasureBytes, e.qc.OOPK.NumDimsPerDimWidth, e.qc.OOPK.IsHLL(), e.stream)
+// evalMeasures is to fill measure values
+func (e *BatchExecutorImpl) evalMeasures() {
+	// measure evaluation.
+	e.qc.doProfile(func() {
+		measureExprRootAction := e.qc.OOPK.currentBatch.makeWriteToMeasureVectorAction(e.qc.OOPK.AggregateType, e.qc.OOPK.MeasureBytes)
+		e.qc.OOPK.currentBatch.processExpression(e.qc.OOPK.Measure, nil, e.qc.TableScanners, e.qc.OOPK.foreignTables, e.stream, e.qc.Device, measureExprRootAction)
+		e.qc.reportTimingForCurrentBatch(e.stream, &e.start, measureEvalTiming)
+	}, "measure", e.stream)
+}
 
-	e.qc.reportTimingForCurrentBatch(e.stream, &e.start, prepareForDimAndMeasureTiming)
-
+// evalDimensions is to fill dimension values
+func (e *BatchExecutorImpl) evalDimensions() {
 	// dimension expression evaluation.
 	for dimIndex, dimension := range e.qc.OOPK.Dimensions {
 		e.qc.doProfile(func() {
@@ -168,19 +176,25 @@ func (e *BatchExecutorImpl) project() {
 	}
 
 	e.qc.reportTimingForCurrentBatch(e.stream, &e.start, dimEvalTiming)
+}
 
-	// measure evaluation.
-	e.qc.doProfile(func() {
-		measureExprRootAction := e.qc.OOPK.currentBatch.makeWriteToMeasureVectorAction(e.qc.OOPK.AggregateType, e.qc.OOPK.MeasureBytes)
-		e.qc.OOPK.currentBatch.processExpression(e.qc.OOPK.Measure, nil, e.qc.TableScanners, e.qc.OOPK.foreignTables, e.stream, e.qc.Device, measureExprRootAction)
-		e.qc.reportTimingForCurrentBatch(e.stream, &e.start, measureEvalTiming)
-	}, "measure", e.stream)
+// project is to generate dimension and measure values
+func (e *BatchExecutorImpl) project() {
+	// Prepare for dimension and measure evaluation.
+	e.qc.OOPK.currentBatch.prepareForDimAndMeasureEval(e.qc.OOPK.DimRowBytes, e.qc.OOPK.MeasureBytes, e.qc.OOPK.NumDimsPerDimWidth, e.qc.OOPK.IsHLL(), e.stream)
+
+	e.qc.reportTimingForCurrentBatch(e.stream, &e.start, prepareForDimAndMeasureTiming)
+
+	e.evalDimensions()
+
+	e.evalMeasures()
 
 	// wait for stream to clean up non used buffer before final aggregation
 	memutils.WaitForCudaStream(e.stream, e.qc.Device)
 	e.qc.OOPK.currentBatch.cleanupBeforeAggregation()
 }
 
+// reduce is to aggregate measures based on dimensions and aggregation function
 func (e *BatchExecutorImpl) reduce() {
 	// init dimIndexVectorD for sorting and reducing
 	if e.qc.OOPK.IsHLL() {
@@ -212,6 +226,7 @@ func (e *BatchExecutorImpl) reduce() {
 	memutils.WaitForCudaStream(e.stream, e.qc.Device)
 }
 
+// Run is the function to run the whole process for a batch
 func (e *BatchExecutorImpl) Run(isLastBatch bool) {
 	e.isLastBatch = isLastBatch
 	start := utils.Now()
